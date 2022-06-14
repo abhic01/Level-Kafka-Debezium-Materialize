@@ -1,4 +1,3 @@
-version: "3.7"
 services:
   materialized:
     image: materialize/materialized:v0.26.0
@@ -6,87 +5,75 @@ services:
       - 6875:6875
     healthcheck: {test: curl -f localhost:6875, interval: 1s, start_period: 30s}
 
+  zookeeper:
+    container_name: zookeeper
+    image: quay.io/debezium/zookeeper:1.9
+    ports:
+    - 2181:2181
+    - 2888:2888
+    - 3888:3888
+    stdin_open: true
+    tty: true
+    healthcheck: {test: nc -z localhost 2181, interval: 1s, start_period: 30s}
+
+  kafka:
+    container_name: kafka
+    image: quay.io/debezium/kafka:1.9
+    links:
+    - zookeeper:zookeeper
+    ports:
+    - 9092:9092
+    stdin_open: true
+    tty: true
+    healthcheck: {test: nc -z localhost 9092, interval: 1s, start_period: 30s}
+
   postgres:
-    image: postgres:14.2-alpine
-    restart: unless-stopped
+    container_name: postgres
+    image: debezium/postgres
     environment:
       - POSTGRES_DB=default
       - POSTGRES_HOST_AUTH_METHOD=trust
-    healthcheck:
-      {test: pg_isready -q -d postgres -U postgres, interval: 5s, timeout: 60s, start_period: 10s}
-    command: -c wal_level=logical
     ports:
-      - 5433:5432
+    - 5000:5432
     volumes:
-      - ./pg_tables.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./conf.sql:/Downloads/example data/dev-telemetry.sql
+    stdin_open: true
+    tty: true
+    healthcheck: {test: pg_isready -q -d postgres -U postgres, interval: 1s, start_period: 30s}
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.0.1
+  connect:
+    container_name: connect
+    image: quay.io/debezium/connect:1.9
     environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-    healthcheck: {test: nc -z localhost 2181, interval: 1s, start_period: 120s}
-
-  kafka:
-    image: confluentinc/cp-enterprise-kafka:7.0.1
-    environment:
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      OFFSET_STORAGE_TOPIC: my_connect_offsets
+      STATUS_STORAGE_TOPIC: my_connect_statuses
+      CONFIG_STORAGE_TOPIC: my_connect_configs
+      GROUP_ID: '1'
+    links:
+    - zookeeper:zookeeper
+    - kafka:kafka
+    - postgres:postgres
     ports:
-      - 9092:9092
-    depends_on:
-      zookeeper: {condition: service_healthy}
-    healthcheck: {test: nc -z localhost 9092, interval: 1s, start_period: 120s}
+    - 8083:8083
+    stdin_open: true
+    tty: true
+    healthcheck: {test: curl -f localhost:8083, interval: 1s, start_period: 30s}
 
-  debezium:
-    image: debezium/connect:1.8
-    environment:
-      BOOTSTRAP_SERVERS: kafka:9092
-      GROUP_ID: 1
-      CONFIG_STORAGE_TOPIC: connect_configs
-      OFFSET_STORAGE_TOPIC: connect_offsets
-      KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
-      VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
-      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
-    ports:
-      - 8083:8083
-    healthcheck: {test: curl -f localhost:8083, interval: 1s, start_period: 120s}
-    depends_on:
-      kafka: {condition: service_healthy}
-
-  schema-registry:
-    image: confluentinc/cp-schema-registry:7.0.1
-    environment:
-      - SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS=kafka:9092
-      - SCHEMA_REGISTRY_HOST_NAME=schema-registry
-      - SCHEMA_REGISTRY_LISTENERS=http://schema-registry:8081,http://localhost:8081
-    depends_on:
-      zookeeper: {condition: service_healthy}
-      kafka: {condition: service_healthy}
-    healthcheck: {test: curl -f localhost:8081, interval: 1s, start_period: 120s}
-  debezium_deploy:
-    image: debezium/connect:1.8
-    depends_on:
-      debezium: {condition: service_healthy}
-    environment:
-      KAFKA_ADDR: kafka:9092
-    volumes:
-      - ${PWD}/mysql/mysql_dbz.sh:/mysql_dbz.sh
-    entrypoint: [bash, -c, /mysql_dbz.sh]
-  metabase:
-    image: metabase/metabase:v0.41.5
-    depends_on: [materialized]
-    ports:
-      - 3030:3000
-  loadgen:
-    build: loadgen
-    init: true
-    depends_on:
-      debezium: {condition: service_healthy}
-      kafka: {condition: service_healthy}
-      schema-registry: {condition: service_healthy}
-  cli:
-    image: materialize/cli:v0.26.0
+  # metabase:
+  #   image: metabase/metabase:v0.41.5
+  #   depends_on: [materialized]
+  #   ports:
+  #     - 3030:3000
+  #
+  # loadgen:
+  #   build: loadgen
+  #   init: true
+  #   depends_on:
+  #     mysql: {condition: service_healthy}
+  #     debezium: {condition: service_healthy}
+  #     kafka: {condition: service_healthy}
+  #     schema-registry: {condition: service_healthy}
+  # cli:
+  #   image: materialize/cli:v0.26.0
+  #
+  #curl -i -X GET -H "Accept:application/json" localhost:8083/connectors/consumer-connector
