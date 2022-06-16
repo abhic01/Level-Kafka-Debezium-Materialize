@@ -1,4 +1,3 @@
-from secrets import choice
 import psycopg2
 import random
 import datetime
